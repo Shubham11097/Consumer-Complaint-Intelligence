@@ -2,7 +2,7 @@
 
 An open-source NLP system that reads consumer complaints about banks and financial products, classifies what each one is about, explains why, and flags issues that are suddenly growing.
 
-> **Status:** Week 1 complete – raw data ingested and profiled (see [Data findings](#data-findings)). Week 2: silver layer cleaning.
+> **Status:** Week 1 complete – raw data ingested and profiled (see [Data findings](#data-findings)). Week 2: silver layer built; gold layer next.
 
 ## The problem
 
@@ -27,7 +27,7 @@ Two sources from the [CFPB Consumer Complaint Database](https://www.consumerfina
 | Layer | Contents | Status |
 | --- | --- | --- |
 | Bronze | Raw CFPB files exactly as downloaded, with checksums, one folder per source | Done |
-| Silver | Typed, deduplicated, standardised, cleaned text | Planned |
+| Silver | Complaints with narratives: typed, deduplicated, redactions replaced with placeholders, data-quality checked; Parquet | Done |
 | Gold | Model-ready datasets and analytics tables | Planned |
 
 ## Data findings
@@ -77,7 +77,9 @@ python -m src.ingest_bronze --source narratives   # monthly narratives archive f
 python -m src.ingest_bronze --source live         # full live-database download
 # 3. Profile the raw data -> docs/data_profile_<source>.md
 python -m src.profile_raw --source narratives
-# 4. Run the tests
+# 4. Build the silver layer (cleaned Parquet) -> docs/silver_report.md
+python -m src.build_silver
+# 5. Run the tests
 python -m pytest
 ```
 
@@ -94,7 +96,8 @@ data/           landing / bronze / silver / gold (not committed to Git)
 
 - [x] Bronze ingestion with checksums and manifest
 - [x] Raw data profiling, including monthly category-change detection
-- [ ] Silver cleaning and Great Expectations checks
+- [x] Silver cleaning with data-quality checks
+- [ ] Great Expectations data checks
 - [ ] Baseline classifier (TF-IDF + logistic regression)
 - [ ] Transformer classifier (DistilRoBERTa) and SHAP explanations
 - [ ] Emerging-issue detection

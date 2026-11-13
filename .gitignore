@@ -1,0 +1,26 @@
+# Data (large; never committed)
+data/landing/*
+data/bronze/*
+data/silver/*
+data/gold/*
+!data/**/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Secrets and local settings
+.env
+*.tfvars
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Models and editor files
+models/
+mlruns/
+.vscode/
+.DS_Store

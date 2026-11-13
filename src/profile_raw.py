@@ -28,6 +28,8 @@ from src.columns import missing_columns, standardise_columns
 
 CHUNK_ROWS = 200_000
 LENGTH_BUCKETS = [(0, 49), (50, 99), (100, 199), (200, 499), (500, 999), (1000, 10**9)]
+MAX_MONTHS_SHOWN = 36          # monthly tables are skipped for longer ranges
+MIN_ISSUE_COUNT = 50           # ignore tiny issues when looking for category changes
 
 
 # ---------------------------------------------------------------- reading
@@ -85,6 +87,10 @@ class Profile:
         self.by_year = Counter()
         self.by_year_narr = Counter()
         self.product_year = defaultdict(Counter)      # product -> {year: narrative count}
+        self.by_month = Counter()                     # "YYYY-MM" -> all complaints
+        self.by_month_narr = Counter()                # "YYYY-MM" -> complaints with a narrative
+        self.product_month = defaultdict(Counter)     # product -> {month: narrative count}
+        self.issue_month = defaultdict(Counter)       # (product, issue) -> {month: narrative count}
         self.issue_counts = Counter()                 # (product, issue) -> narrative count
         self.length_buckets = Counter()
 
@@ -116,6 +122,7 @@ class Profile:
             self.min_date = lo if self.min_date is None else min(self.min_date, lo)
             self.max_date = hi if self.max_date is None else max(self.max_date, hi)
         years = dates.dt.year
+        months = dates.dt.strftime("%Y-%m")
 
         narrative = chunk.get("narrative", pd.Series([""] * n)).astype(str).str.strip()
         has_narr = narrative != ""
@@ -125,18 +132,48 @@ class Profile:
             self.by_year[int(year)] += int(count)
         for year, count in years[has_narr].value_counts().items():
             self.by_year_narr[int(year)] += int(count)
+        for month, count in months.value_counts().items():
+            self.by_month[month] += int(count)
+        for month, count in months[has_narr].value_counts().items():
+            self.by_month_narr[month] += int(count)
 
-        narr = chunk[has_narr.values].assign(year=years[has_narr.values])
+        narr = chunk[has_narr.values].assign(year=years[has_narr.values], month=months[has_narr.values])
         if "product" in narr:
             for (product, year), count in narr.groupby(["product", "year"]).size().items():
                 self.product_year[product][int(year)] += int(count)
+            for (product, month), count in narr.groupby(["product", "month"]).size().items():
+                self.product_month[product][month] += int(count)
             if "issue" in narr:
                 for key, count in narr.groupby(["product", "issue"]).size().items():
                     self.issue_counts[key] += int(count)
+                for (product, issue, month), count in narr.groupby(["product", "issue", "month"]).size().items():
+                    self.issue_month[(product, issue)][month] += int(count)
 
         words = narrative[has_narr].str.split().str.len()
         for lo, hi in LENGTH_BUCKETS:
             self.length_buckets[(lo, hi)] += int(((words >= lo) & (words <= hi)).sum())
+
+    def category_changes(self) -> list:
+        """Products and issues that start after the first month or stop before the last.
+
+        Returns (kind, name, first_month, last_month, complaints) tuples. A category
+        that appears or disappears inside the range is usually a CFPB rename.
+        """
+        months = sorted(self.by_month_narr)
+        if len(months) < 2:
+            return []
+        first, last = months[0], months[-1]
+        changes = []
+        for product, counts in self.product_month.items():
+            seen = sorted(counts)
+            if seen[0] > first or seen[-1] < last:
+                changes.append(("Product", product, seen[0], seen[-1], sum(counts.values())))
+        for (product, issue), counts in self.issue_month.items():
+            total = sum(counts.values())
+            seen = sorted(counts)
+            if total >= MIN_ISSUE_COUNT and (seen[0] > first or seen[-1] < last):
+                changes.append(("Issue", f"{product} / {issue}", seen[0], seen[-1], total))
+        return sorted(changes, key=lambda c: (c[0] != "Product", -c[4]))
 
     @property
     def duplicate_ids(self) -> int:
@@ -183,6 +220,7 @@ def render(p: Profile, batch: Path) -> str:
         _table(["Year", "All", "With narrative", "Narrative share"],
                [[y, f"{p.by_year[y]:,}", f"{p.by_year_narr[y]:,}", pct(p.by_year_narr[y], p.by_year[y])] for y in sorted(p.by_year)]),
         "",
+        *render_monthly(p, pct),
         "## Products by year (complaints with a narrative)",
         "",
         "A product that appears or disappears between years usually means CFPB renamed its categories.",
@@ -224,6 +262,44 @@ def data_files(batch: Path) -> list:
         f for f in batch.iterdir()
         if f.suffix.lower() in {".zip", ".csv", ".json"} and f.name != "manifest.json"
     )
+
+
+def render_monthly(p: Profile, pct) -> list:
+    """Monthly sections: volumes, products by month, and category changes."""
+    months = sorted(p.by_month)
+    if not months:
+        return []
+    if len(months) > MAX_MONTHS_SHOWN:
+        return [f"_Monthly tables skipped: {len(months)} months is more than {MAX_MONTHS_SHOWN}._", ""]
+    narr_months = sorted(p.by_month_narr)
+    products = sorted(p.product_month, key=lambda k: -sum(p.product_month[k].values()))
+    changes = p.category_changes()
+    lines = [
+        "## Complaints per month",
+        "",
+        _table(["Month", "All", "With narrative", "Narrative share"],
+               [[m, f"{p.by_month[m]:,}", f"{p.by_month_narr[m]:,}", pct(p.by_month_narr[m], p.by_month[m])] for m in months]),
+        "",
+        "## Products by month (complaints with a narrative)",
+        "",
+        _table(["Product"] + narr_months,
+               [[prod] + [f"{p.product_month[prod].get(m, 0):,}" for m in narr_months] for prod in products]),
+        "",
+        "## Category changes inside the date range",
+        "",
+    ]
+    if changes:
+        lines += [
+            f"Products, and issues with at least {MIN_ISSUE_COUNT} complaints, that start after the first month or stop before the last.",
+            "These usually mean CFPB renamed or reorganised a category.",
+            "",
+            _table(["Kind", "Category", "First month", "Last month", "Complaints"],
+                   [[k, name, a, b, f"{n:,}"] for k, name, a, b, n in changes]),
+        ]
+    else:
+        lines.append("None: every product, and every issue with at least "
+                     f"{MIN_ISSUE_COUNT} complaints, appears in every month of the range.")
+    return lines + [""]
 
 
 def latest_batch(source_dir: Path) -> Path:

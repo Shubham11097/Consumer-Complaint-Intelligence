@@ -79,3 +79,28 @@ def test_later_chunks_and_missing_columns_do_not_break_profiling(tmp_path, monke
     assert p.rows == 4
     assert p.with_narrative == 0
     assert "narrative" in p.missing_required
+
+
+def test_monthly_counts_and_category_changes(tmp_path, monkeypatch):
+    import src.profile_raw as pr
+    monkeypatch.setattr(pr, "MIN_ISSUE_COUNT", 1)
+    rows = pd.DataFrame({
+        "Complaint ID": ["1", "2", "3", "4"],
+        "Date received": ["2026-01-10", "2026-02-10", "2026-03-10", "2026-03-11"],
+        "Product": ["Credit card", "Credit card", "Credit card", "Prepaid card"],
+        "Issue": ["Old fee name", "Old fee name", "New fee name", "Fees"],
+        "Consumer complaint narrative": ["text", "text", "text", "text"],
+        "Company": ["A", "A", "A", "B"],
+    })
+    csv = tmp_path / "months.csv"
+    rows.to_csv(csv, index=False)
+
+    p = _profile_of(csv)
+    changes = {(kind, name): (first, last) for kind, name, first, last, _ in p.category_changes()}
+
+    assert p.by_month_narr["2026-03"] == 2
+    assert p.product_month["Credit card"]["2026-01"] == 1
+    assert changes[("Product", "Prepaid card")] == ("2026-03", "2026-03")
+    assert changes[("Issue", "Credit card / Old fee name")] == ("2026-01", "2026-02")
+    assert changes[("Issue", "Credit card / New fee name")] == ("2026-03", "2026-03")
+    assert ("Product", "Credit card") not in changes

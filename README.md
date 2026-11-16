@@ -2,7 +2,7 @@
 
 An open-source NLP system that reads consumer complaints about banks and financial products, classifies what each one is about, explains why, and flags issues that are suddenly growing.
 
-> **Status:** Week 1 complete – raw data ingested and profiled (see [Data findings](#data-findings)). Week 2: silver layer built; gold layer next.
+> **Status:** Bronze and silver layers built on 45 months of data (see [Data findings](#data-findings)). Gold layer next.
 
 ## The problem
 
@@ -32,26 +32,31 @@ Two sources from the [CFPB Consumer Complaint Database](https://www.consumerfina
 
 ## Data findings
 
-Profiled from the bronze layer with `python -m src.profile_raw`. Full reports: [narratives archive](docs/data_profile_narratives.md) · [live database](docs/data_profile_live.md).
+Profiled from bronze with `python -m src.profile_raw` and from silver with `python -m src.analyse_templates`. Full reports: [narratives profile](docs/data_profile_narratives.md) · [silver report](docs/silver_report.md) · [template analysis](docs/template_report.md) · [live database profile](docs/data_profile_live.md).
 
-### Narratives archive (March 2025 – July 2026)
+### Narratives archive (November 2022 – July 2026, 45 months)
 
 | Measure | Value |
 | --- | --- |
-| Complaints in the 11 monthly exports | 8,816,336 |
-| Complaints with a written narrative | 1,078,038 (12.2%) |
+| Complaints in the 17 archive exports | 13,815,857 |
+| Complaints with a written narrative | 2,711,934 (19.6%) |
+| Written to silver after cleaning | 2,710,927 |
 | Duplicate complaint IDs, unreadable dates, missing columns | None |
-| Products | 11, every one present in every month |
+| Complaints mapped from pre-August-2023 category names | 302,054 |
 
-**1. Credit reporting narratives collapsed in January 2026.** Credit reporting accounts for 746,837 of the 1,078,038 narratives (69%). It ran at roughly 85,000 a month through most of 2025 (peak 101,415 in July 2025), fell to 38,876 in December 2025, then to 862 in January 2026, a drop of about 98% in one month. It stayed below 900 a month through July 2026. Total complaints kept rising over the same period, and the other 10 products held steady. The cause is not yet known.
+**1. About 37% of narratives are copy-paste template letters.** 19,295 distinct texts each appear 5 or more times, covering 1,002,550 complaints. Just 132 texts account for 449,398 complaints; the most common appears 30,112 times. The top templates cite the Fair Credit Reporting Act ("15 U.S. Code 1681"), use legal phrases such as "estoppel by silence", or ask for accounts to be deleted. 90% of template complaints are about credit reporting (907,170 of 1,002,550). An independent analysis describes the same pattern ([Frank on Fraud](https://frankonfraud.com/?p=28987)).
 
-**2. The share of complaints published with a narrative is falling.** It was 26.5% in March 2025 and 1.5% in July 2026. Most of the fall comes from credit reporting. Of the other products, debt collection fell the most, from about 9,000–10,000 a month in mid-2025 to about 5,000–6,000 in May–June 2026; most others stayed roughly flat.
+**2. The template wave built up over two years, then stopped in January 2026.** Template letters made up 17% of narratives in November 2022, about 30% by mid-2023, and 40–47% from April 2024 to December 2025. In January 2026 the share fell to 9%, and it stayed between 7% and 11% through July 2026.
 
-**3. Categories are stable.** No product was renamed or added during the period. Only one issue with at least 50 complaints stops early ("Identity theft protection or other monitoring services", 246 complaints, last seen June 2026). The whole range can be used with one consistent set of labels.
+**3. Credit reporting narratives collapsed at the same time.** Credit reporting is 1,944,099 of the 2,710,927 silver narratives (72%). It grew from about 30,000 a month in late 2023 to 85,000–101,000 a month in 2025, then fell from 38,876 in December 2025 to 862 in January 2026, a drop of about 98%. Total complaints kept rising, and most other products held steady. The fall coincides with the end of the template wave; the cause is not yet known.
 
-**4. February and July 2026 are low for every product.** Narratives fall by 40–50% from the previous month in both cases, across all products, which points to incomplete exports rather than real changes. To be confirmed before these months are used for testing.
+**4. A Cash App template drove a money-transfer spike in January 2025.** Money-transfer narratives jumped from 1,149 in December 2024 to 41,618 in January 2025, then fell back to 4,640 in February. A template complaint against Cash App first appears that month and is used 9,998 times overall. 26% of all money-transfer narratives are templates.
 
-**5. Narratives are mostly short to medium.** 100–199 words is the most common length (305,729 complaints). 197,933 (18%) are under 50 words. 56,796 (5%) are over 500 words and will be truncated by a 512-token transformer.
+**5. The share of complaints published with a narrative fell every year:** 41% in 2022, 38% in 2023, 30% in 2024, 23% in 2025 and 3% in 2026. The CFPB stopped publishing narratives on 14 August 2026 and moved published narratives to its FOIA reading room ([Mondaq](https://www.mondaq.com/cfpb-stops-publishing-consumer-complaint-narratives-and-visualizations/1833726)).
+
+**6. The CFPB reorganised its categories in August 2023.** Silver maps the old names onto the current 11 products, using the sub-product to split "Credit card or prepaid card" and to move credit repair into "Debt or credit management". Originals are kept in `product_original` and `issue_original`. See [`src/category_mapping.py`](src/category_mapping.py).
+
+**7. Narratives are mostly short to medium.** 100–199 words is the most common length (810,766 complaints); 530,271 (20%) are under 50 words; 137,149 (5%) are over 500 words and will be truncated by a 512-token transformer.
 
 ### Live database (December 2011 – November 2026)
 
@@ -59,8 +64,9 @@ Profiled from the bronze layer with `python -m src.profile_raw`. Full reports: [
 
 ### What this means for modelling (planned)
 
-- Training on all narratives would teach the model mostly "credit reporting", and the 2026 test months look very different from 2025. This is **data drift**.
-- Plan: keep all 17 months, cap credit reporting at about 30,000 complaints sampled evenly across months (about 360,000 complaints in total), and split by time: train on March 2025 – February 2026, validate on March – April 2026, test on May – July 2026.
+- **Leakage:** if the same letter appears in training and test data, the model memorises it and its score is inflated. Keeping one copy of every exact text leaves 1,454,276 unique complaints.
+- **Data drift:** training on everything would teach the model mostly "credit reporting template letter", while 2026 complaints look very different.
+- **Plan:** keep one copy of each text (the earliest), drop narratives under 3 words, cap credit reporting at a fixed number sampled evenly across months, and split by time: train on November 2022 – February 2026, validate on March – April 2026, test on May – July 2026.
 
 ## Run it locally
 

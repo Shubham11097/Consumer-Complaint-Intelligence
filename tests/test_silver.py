@@ -79,7 +79,7 @@ def test_build_end_to_end_with_dedupe_and_report(tmp_path, monkeypatch):
     monkeypatch.setattr(bs, "write_part", lambda df, path: written.append(df))
     batch = _bronze_batch(tmp_path)
 
-    summary = bs.build(batch, tmp_path / "silver", tmp_path / "report.md")
+    summary = bs.build([batch], tmp_path / "silver", tmp_path / "report.md")
 
     assert summary["rows_read"] == 6
     assert summary["rows_written"] == 3
@@ -96,7 +96,7 @@ def test_build_writes_readable_parquet(tmp_path):
     pytest.importorskip("pyarrow")
     batch = _bronze_batch(tmp_path)
 
-    bs.build(batch, tmp_path / "silver", tmp_path / "report.md")
+    bs.build([batch], tmp_path / "silver", tmp_path / "report.md")
     silver = pd.read_parquet(tmp_path / "silver" / "2026-11-06")
 
     assert len(silver) == 3
@@ -123,7 +123,44 @@ def test_build_handles_chunks_with_no_narratives(tmp_path, monkeypatch):
     # Reorder so the middle chunk holds only the "no narrative" and "placeholders only" rows.
     batch = _bronze_batch(tmp_path, BRONZE_ROWS.iloc[[0, 3, 1, 2, 4, 5]])
 
-    summary = bs.build(batch, tmp_path / "silver", tmp_path / "report.md")
+    summary = bs.build([batch], tmp_path / "silver", tmp_path / "report.md")
 
     assert summary["rows_written"] == 3
     assert summary["part_files"] == 2
+
+
+def test_build_combines_all_batches(tmp_path, monkeypatch):
+    from src.profile_raw import all_batches
+    written = []
+    monkeypatch.setattr(bs, "write_part", lambda df, path: written.append((path, df)))
+    older = _bronze_batch(tmp_path)   # 2026-11-06: complaints 1, 4, 5
+    newer = tmp_path / "bronze" / "narratives" / "2026-11-16"
+    newer.mkdir()
+    extra = BRONZE_ROWS.head(1).assign(**{"Complaint ID": "99", "Date received": "2024-05-01"})
+    extra.to_csv(newer / "older_months.csv", index=False)
+    (newer / "manifest.json").write_text("{}", encoding="utf-8")
+
+    batches = all_batches(tmp_path / "bronze" / "narratives")
+    summary = bs.build(batches, tmp_path / "silver", tmp_path / "report.md")
+
+    assert [b.name for b in batches] == ["2026-11-06", "2026-11-16"]
+    assert summary["rows_written"] == 4
+    assert sorted(pd.concat([df for _, df in written])["complaint_id"].tolist()) == [1, 4, 5, 99]
+    assert all(path.parent.name == "2026-11-16" for path, _ in written)   # output named after newest batch
+
+
+def test_old_category_names_are_mapped_in_silver(tmp_path, monkeypatch):
+    written = []
+    monkeypatch.setattr(bs, "write_part", lambda df, path: written.append(df))
+    old = BRONZE_ROWS.head(1).assign(**{
+        "Product": "Credit card or prepaid card", "Sub-product": "Gift card", "Date received": "2023-03-01"})
+    batch = _bronze_batch(tmp_path, old)
+
+    summary = bs.build([batch], tmp_path / "silver", tmp_path / "report.md")
+    row = pd.concat(written).iloc[0]
+
+    assert row["product"] == "Prepaid card"
+    assert row["product_original"] == "Credit card or prepaid card"
+    assert summary["products_remapped"] == {"Credit card or prepaid card  ->  Prepaid card": 1}
+    assert all(c["passed"] for c in summary["checks"] if c["severity"] == "error")
+    assert "Old category names mapped" in (tmp_path / "report.md").read_text(encoding="utf-8")

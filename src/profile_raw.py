@@ -5,13 +5,13 @@
   3. Which products and issues are large enough to model?
   4. Are there duplicate complaint IDs or missing required columns?
 
-Reads every .zip/.csv/.json file in a bronze batch folder in chunks (so large
+Reads every .zip/.csv/.json file in all bronze batches of a source, in chunks (so large
 files don't fill memory) and writes a Markdown report to docs/data_profile.md.
 
 Usage:
-    python -m src.profile_raw --source narratives      # latest narratives batch
-    python -m src.profile_raw --source live            # latest live-database batch
-    python -m src.profile_raw --batch data/bronze/narratives/2026-11-06
+    python -m src.profile_raw --source narratives      # all narratives batches combined
+    python -m src.profile_raw --source live            # all live-database batches combined
+    python -m src.profile_raw --batch data/bronze/narratives/2026-11-06   # one batch only
 """
 
 import argparse
@@ -28,7 +28,7 @@ from src.columns import missing_columns, standardise_columns
 
 CHUNK_ROWS = 200_000
 LENGTH_BUCKETS = [(0, 49), (50, 99), (100, 199), (200, 499), (500, 999), (1000, 10**9)]
-MAX_MONTHS_SHOWN = 36          # monthly tables are skipped for longer ranges
+MAX_MONTHS_SHOWN = 60          # monthly tables are skipped for longer ranges
 MIN_ISSUE_COUNT = 50           # ignore tiny issues when looking for category changes
 
 
@@ -192,12 +192,12 @@ def _table(headers, rows) -> str:
     return "\n".join(out)
 
 
-def render(p: Profile, batch: Path) -> str:
+def render(p: Profile, batches: list) -> str:
     pct = lambda a, b: f"{(100 * a / b):.1f}%" if b else "n/a"
     lines = [
         "# Raw data profile",
         "",
-        f"Batch: `{batch.as_posix()}`",
+        "Bronze batches: " + ", ".join(f"`{b.as_posix()}`" for b in batches),
         "",
         "## Overview",
         "",
@@ -302,27 +302,32 @@ def render_monthly(p: Profile, pct) -> list:
     return lines + [""]
 
 
-def latest_batch(source_dir: Path) -> Path:
-    """Most recent dated batch folder (one that has a manifest) under a source folder."""
+def all_batches(source_dir: Path) -> list:
+    """Every dated batch folder (one that has a manifest) under a source folder, oldest first."""
     batches = sorted(d for d in source_dir.iterdir() if d.is_dir() and (d / "manifest.json").exists()) if source_dir.exists() else []
     if not batches:
         raise SystemExit(f"No batches in {source_dir}. Run `python -m src.ingest_bronze --source ...` first.")
-    return batches[-1]
+    return batches
+
+
+def latest_batch(source_dir: Path) -> Path:
+    """Most recent batch folder under a source folder."""
+    return all_batches(source_dir)[-1]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Profile a bronze batch of CFPB complaints.")
-    parser.add_argument("--batch", type=Path, help="Bronze batch folder (default: latest)")
+    parser = argparse.ArgumentParser(description="Profile the bronze data of one source.")
+    parser.add_argument("--batch", type=Path, help="Profile one batch folder only (default: all batches of the source)")
     parser.add_argument("--source", default="narratives", choices=["narratives", "live"])
     parser.add_argument("--bronze", type=Path, default=Path("data/bronze"))
     parser.add_argument("--out", type=Path, help="Report path (default: docs/data_profile_<source>.md)")
     args = parser.parse_args()
 
-    batch = args.batch or latest_batch(args.bronze / args.source)
+    batches = [args.batch] if args.batch else all_batches(args.bronze / args.source)
     args.out = args.out or Path(f"docs/data_profile_{args.source}.md")
-    files = data_files(batch)
+    files = [f for b in batches for f in data_files(b)]
     if not files:
-        raise SystemExit(f"No data files in {batch}")
+        raise SystemExit("No data files in " + ", ".join(str(b) for b in batches))
 
     profile = Profile()
     for path in files:
@@ -332,7 +337,7 @@ def main():
             print(f"  {profile.rows:,} rows so far")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(render(profile, batch), encoding="utf-8")
+    args.out.write_text(render(profile, batches), encoding="utf-8")
     summary = {"rows": profile.rows, "with_narrative": profile.with_narrative, "duplicate_ids": profile.duplicate_ids}
     print(json.dumps(summary, indent=2))
     print(f"Report written to {args.out}")

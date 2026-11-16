@@ -1,20 +1,21 @@
 """Silver layer: cleaned, typed, deduplicated complaints with narratives.
 
-Reads the latest narratives batch from bronze and, chunk by chunk:
+Reads every narratives batch in bronze (combined) and, chunk by chunk:
   1. keeps only complaints that have a written narrative
-  2. standardises column names and types (dates, IDs, yes/no flags)
+  2. standardises column names and types (dates, IDs, yes/no flags), and maps
+     pre-August-2023 category names onto the current ones
   3. cleans the narrative text (placeholders for redactions, tidy whitespace)
   4. removes duplicate complaint IDs and texts that are only placeholders
   5. adds month, word count and a text fingerprint (to spot template complaints)
   6. runs data-quality checks on every chunk
-  7. writes Parquet files to data/silver/narratives/<batch>/
+  7. writes Parquet files to data/silver/narratives/<latest batch date>/
 
 The full narrative set is kept here. Capping credit reporting and splitting
 into train/validation/test happen later, in the gold layer.
 
 Usage:
-    python -m src.build_silver
-    python -m src.build_silver --batch data/bronze/narratives/2026-11-06
+    python -m src.build_silver                       # all narratives batches
+    python -m src.build_silver --batch data/bronze/narratives/2026-11-06   # one batch only
 """
 
 import argparse
@@ -26,8 +27,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.category_mapping import map_categories
 from src.columns import standardise_columns
-from src.profile_raw import data_files, iter_chunks, latest_batch
+from src.profile_raw import all_batches, data_files, iter_chunks
 from src.silver_checks import ERROR, check_chunk, summarise
 from src.text_cleaning import clean_narrative, has_content, text_hash, word_count
 
@@ -35,6 +37,7 @@ SILVER_COLUMNS = [
     "complaint_id", "date_received", "month", "product", "sub_product", "issue", "sub_issue",
     "company", "state", "submitted_via", "company_response_to_consumer", "timely_response",
     "narrative", "narrative_clean", "word_count", "text_hash", "source_file",
+    "product_original", "issue_original",
 ]
 TEXT_COLUMNS = [
     "product", "sub_product", "issue", "sub_issue", "company", "state",
@@ -48,7 +51,8 @@ def transform_chunk(chunk: pd.DataFrame, source: str) -> tuple[pd.DataFrame, Cou
     dropped = Counter()
     df = chunk.rename(columns=standardise_columns(chunk.columns)).reset_index(drop=True)
     for col in SILVER_COLUMNS:
-        if col not in df and col not in {"month", "narrative_clean", "word_count", "text_hash", "source_file"}:
+        if col not in df and col not in {"month", "narrative_clean", "word_count", "text_hash", "source_file",
+                                         "product_original", "issue_original"}:
             df[col] = ""
 
     has_narrative = (df["narrative"].astype(str).str.strip() != "").astype(bool)
@@ -76,6 +80,7 @@ def transform_chunk(chunk: pd.DataFrame, source: str) -> tuple[pd.DataFrame, Cou
     df["month"] = df["date_received"].dt.strftime("%Y-%m")
     for col in TEXT_COLUMNS:
         df[col] = df[col].astype(str).str.strip()
+    df = map_categories(df)
     df["timely_response"] = df["timely_response"].astype(str).str.strip().str.lower().map({"yes": True, "no": False}).astype("boolean")
     df["word_count"] = df["narrative_clean"].map(word_count).astype("int32")
     df["text_hash"] = df["narrative_clean"].map(text_hash)
@@ -88,21 +93,23 @@ def write_part(df: pd.DataFrame, path: Path) -> None:
     df.to_parquet(path, index=False)
 
 
-def build(batch: Path, silver_root: Path, report_path: Path) -> dict:
-    """Build silver from one bronze batch. Returns the run summary."""
-    out_dir = silver_root / batch.name
+def build(batches: list, silver_root: Path, report_path: Path) -> dict:
+    """Build silver from one or more bronze batches combined. Returns the run summary."""
+    batches = sorted(batches)
+    out_dir = silver_root / batches[-1].name
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("part-*"):
         old.unlink()   # a rebuild replaces the previous output
 
     seen_ids: set = set()
     hash_counts: Counter = Counter()
+    remapped: Counter = Counter()
     dropped: Counter = Counter()
     chunk_results = []
     rows_in = rows_out = 0
     part = 0
 
-    for path in data_files(batch):
+    for path in (f for b in batches for f in data_files(b)):
         print(f"Reading {path.name} ...")
         for source, chunk in iter_chunks(path):
             rows_in += len(chunk)
@@ -118,6 +125,7 @@ def build(batch: Path, silver_root: Path, report_path: Path) -> dict:
             seen_ids.update(df["complaint_id"].tolist())
 
             chunk_results.append(check_chunk(df))
+            remapped.update((df["product_original"] + "  ->  " + df["product"])[df["product_original"] != df["product"]].tolist())
             hash_counts.update(df["text_hash"].tolist())
             if len(df):
                 part += 1
@@ -127,12 +135,13 @@ def build(batch: Path, silver_root: Path, report_path: Path) -> dict:
 
     repeated = {h: n for h, n in hash_counts.items() if n >= TEMPLATE_MIN_REPEATS}
     summary = {
-        "batch": batch.as_posix(),
+        "batches": [b.as_posix() for b in batches],
         "built_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rows_read": rows_in,
         "rows_written": rows_out,
         "rows_dropped": dict(dropped),
         "part_files": part,
+        "products_remapped": {k: v for k, v in remapped.most_common()},
         "template_texts": len(repeated),
         "rows_with_template_text": sum(repeated.values()),
         "checks": summarise(chunk_results, rows_out),
@@ -147,7 +156,7 @@ def render_report(s: dict) -> str:
     lines = [
         "# Silver layer report",
         "",
-        f"Bronze batch: `{s['batch']}` · built {s['built_at_utc']}",
+        "Bronze batches: " + ", ".join(f"`{b}`" for b in s["batches"]) + f" · built {s['built_at_utc']}",
         "",
         "## Rows",
         "",
@@ -158,6 +167,13 @@ def render_report(s: dict) -> str:
     lines += [f"| Dropped: {reason} | {n:,} |" for reason, n in sorted(s["rows_dropped"].items())]
     lines += [
         f"| **Written to silver** | **{s['rows_written']:,}** |",
+        "",
+        "## Old category names mapped to current ones",
+        "",
+        "| Old product  ->  current product | Complaints |",
+        "| --- | --- |",
+        *[f"| {k} | {v:,} |" for k, v in s["products_remapped"].items()],
+        *(["| (none) | 0 |"] if not s["products_remapped"] else []),
         "",
         "## Repeated (template) texts",
         "",
@@ -177,14 +193,14 @@ def render_report(s: dict) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Build the silver layer from a bronze narratives batch.")
-    parser.add_argument("--batch", type=Path, help="Bronze batch folder (default: latest narratives batch)")
+    parser.add_argument("--batch", type=Path, help="Build from one batch only (default: all narratives batches)")
     parser.add_argument("--bronze", type=Path, default=Path("data/bronze"))
     parser.add_argument("--silver", type=Path, default=Path("data/silver/narratives"))
     parser.add_argument("--report", type=Path, default=Path("docs/silver_report.md"))
     args = parser.parse_args()
 
-    batch = args.batch or latest_batch(args.bronze / "narratives")
-    summary = build(batch, args.silver, args.report)
+    batches = [args.batch] if args.batch else all_batches(args.bronze / "narratives")
+    summary = build(batches, args.silver, args.report)
     failed = [c for c in summary["checks"] if c["severity"] == ERROR and not c["passed"]]
     print(f"Silver rows written: {summary['rows_written']:,}")
     print(f"Report written to {args.report}")

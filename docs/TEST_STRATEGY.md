@@ -13,8 +13,12 @@ Risk-based: each risk to the project is matched to the test that catches it. Tes
 | Category names change over time | Bronze → Silver | Monthly category-change report; build fails if a product is outside the known list of 11 | Profiler + silver checks + pytest | Done |
 | Redaction patterns not handled (names, dates, amounts) | Silver | Placeholder rules tested on real CFPB patterns, normal words like "Xbox" untouched | pytest | Done |
 | Unreadable IDs or dates | Silver | Rows dropped and counted; checks for missing IDs, missing dates, future dates | Silver checks + pytest | Done |
-| Repeated template complaints inflate one class | Silver → Gold | Text fingerprint; texts repeated 5+ times counted in silver report | Silver report | Flagged; handled in gold |
-| Same complaint in train and test sets | Gold | No ID overlap between splits | pytest | Planned |
+| Repeated template complaints inflate one class | Silver → Gold | Text fingerprint in silver; template analysis report; one copy kept in gold | Silver report + gold | Done |
+| Same complaint in train and test sets | Gold | Build fails if a complaint ID is in more than one split | Gold checks + pytest | Done |
+| Same template letter in train and test (leakage) | Gold | One copy of each exact text kept (earliest); build fails if a text is in more than one split | Gold checks + pytest | Done |
+| Future data leaks into training | Gold | Build fails unless train < validation < test in time | Gold checks + pytest | Done |
+| One product dominates training | Gold | Credit reporting capped in train, sampled evenly across months; build fails if over the cap | Gold checks + pytest | Done |
+| A product missing from training | Gold | Build fails if any of the 11 products is absent from train | Gold checks + pytest | Done |
 | Model gets worse after a change | Model | CI gate: macro-F1 must not fall below baseline | pytest + GitHub Actions | Planned |
 | Model relies on irrelevant words | Model | Prediction unchanged when company name or amount changes | pytest | Planned |
 | Broken deployment | Dev → Prod | Smoke tests in dev before approval to prod | GitHub Actions | Planned |

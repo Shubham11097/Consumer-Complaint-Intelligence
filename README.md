@@ -2,7 +2,7 @@
 
 An open-source NLP system that reads consumer complaints about banks and financial products, classifies what each one is about, explains why, and flags issues that are suddenly growing.
 
-> **Status:** Bronze and silver layers built on 45 months of data (see [Data findings](#data-findings)). Gold layer next.
+> **Status:** Bronze, silver and gold layers built on 45 months of data (see [Data findings](#data-findings)). Baseline model next.
 
 ## The problem
 
@@ -28,7 +28,7 @@ Two sources from the [CFPB Consumer Complaint Database](https://www.consumerfina
 | --- | --- | --- |
 | Bronze | Raw CFPB files exactly as downloaded, with checksums, one folder per source | Done |
 | Silver | Complaints with narratives: typed, deduplicated, redactions replaced with placeholders, data-quality checked; Parquet | Done |
-| Gold | Model-ready datasets and analytics tables | Planned |
+| Gold | Model data: one copy of each text, credit reporting capped in train, time-based train / validation / test splits, leakage checks. Analytics: monthly counts by product, issue and company (Parquet + CSV) | Done |
 
 ## Data findings
 
@@ -85,7 +85,11 @@ python -m src.ingest_bronze --source live         # full live-database download
 python -m src.profile_raw --source narratives
 # 4. Build the silver layer (cleaned Parquet) -> docs/silver_report.md
 python -m src.build_silver
-# 5. Run the tests
+# 5. Analyse repeated template texts -> docs/template_report.md
+python -m src.analyse_templates
+# 6. Build the gold layer (model data + analytics tables) -> docs/gold_report.md
+python -m src.build_gold
+# 7. Run the tests
 python -m pytest
 ```
 
@@ -104,6 +108,7 @@ data/           landing / bronze / silver / gold (not committed to Git)
 - [x] Raw data profiling, including monthly category-change detection
 - [x] Silver cleaning with data-quality checks
 - [ ] Great Expectations data checks
+- [x] Gold layer: deduplicated, capped, time-split model data and analytics tables
 - [ ] Baseline classifier (TF-IDF + logistic regression)
 - [ ] Transformer classifier (DistilRoBERTa) and SHAP explanations
 - [ ] Emerging-issue detection

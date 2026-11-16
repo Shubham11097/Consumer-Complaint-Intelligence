@@ -19,6 +19,6 @@ Risk-based: each risk to the project is matched to the test that catches it. Tes
 | Future data leaks into training | Gold | Build fails unless train < validation < test in time | Gold checks + pytest | Done |
 | One product dominates training | Gold | Credit reporting capped in train, sampled evenly across months; build fails if over the cap | Gold checks + pytest | Done |
 | A product missing from training | Gold | Build fails if any of the 11 products is absent from train | Gold checks + pytest | Done |
-| Model gets worse after a change | Model | CI gate: macro-F1 must not fall below baseline | pytest + GitHub Actions | Planned |
+| Model gets worse after a change | Model | Performance gate on committed metrics: baseline must beat the always-most-common guess by 0.20 macro-F1; every other model must match or beat the baseline on test macro-F1 | pytest (GitHub Actions next) | Done |
 | Model relies on irrelevant words | Model | Prediction unchanged when company name or amount changes | pytest | Planned |
 | Broken deployment | Dev → Prod | Smoke tests in dev before approval to prod | GitHub Actions | Planned |

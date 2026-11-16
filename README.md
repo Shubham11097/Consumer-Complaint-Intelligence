@@ -89,7 +89,9 @@ python -m src.build_silver
 python -m src.analyse_templates
 # 6. Build the gold layer (model data + analytics tables) -> docs/gold_report.md
 python -m src.build_gold
-# 7. Run the tests
+# 7. Train and evaluate the baseline model -> docs/baseline_report.md, reports/baseline_metrics.json
+python -m src.train_baseline
+# 8. Run the tests (includes the model performance gate)
 python -m pytest
 ```
 
@@ -109,7 +111,7 @@ data/           landing / bronze / silver / gold (not committed to Git)
 - [x] Silver cleaning with data-quality checks
 - [ ] Great Expectations data checks
 - [x] Gold layer: deduplicated, capped, time-split model data and analytics tables
-- [ ] Baseline classifier (TF-IDF + logistic regression)
+- [x] Baseline classifier (TF-IDF + logistic regression) with a CI performance gate
 - [ ] Transformer classifier (DistilRoBERTa) and SHAP explanations
 - [ ] Emerging-issue detection
 - [ ] Azure deployment (Data Lake Gen2, Data Factory, PostgreSQL) with Terraform
